@@ -18,6 +18,7 @@
     "tailwindcss": "latest"
   },
   "devDependencies": {
+    "@tailwindcss/postcss": "latest",
     "@types/node": "latest",
     "@types/pg": "latest",
     "@types/react": "latest",
