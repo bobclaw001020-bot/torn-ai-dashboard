@@ -1,6 +1,9 @@
 import { NextResponse } from "next/server";
 import { requireUser } from "../../../src/lib/auth/guards";
-import { syncAllProfiles } from "../../../src/lib/db/sync";
+import { syncAllProfiles } from "../../../src/lib/torn/sync";
+
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
 
 export async function POST() {
   try {
