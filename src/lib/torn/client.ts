@@ -1,71 +1,69 @@
 import "server-only";
 
 import type { TornCurrentState } from "./types";
+import { DASHBOARD_USER_SELECTIONS } from "./coverage";
 
-const TORN_API_BASE = "https://api.torn.com";
+const TORN_API_BASE = "https://api.torn.com/v2";
 
-function buildUrl(path: string, apiKey: string, selections: string[]) {
+export class TornApiError extends Error {
+  constructor(message: string, readonly code?: number) {
+    super(message);
+    this.name = "TornApiError";
+  }
+}
+
+function buildUrl(section: string, userId: number | undefined, apiKey: string, selections: readonly string[]) {
+  const path = userId ? `/${section}/${userId}` : `/${section}/`;
   const url = new URL(`${TORN_API_BASE}${path}`);
   url.searchParams.set("key", apiKey);
-  if (selections.length > 0) url.searchParams.set("selections", selections.join(","));
+  url.searchParams.set("selections", selections.join(","));
   return url;
 }
 
-async function tornRequest<T>(path: string, apiKey: string, selections: string[]): Promise<T> {
-  const response = await fetch(buildUrl(path, apiKey, selections), {
+async function tornRequest<T>(section: string, userId: number | undefined, apiKey: string, selections: readonly string[]): Promise<T> {
+  const response = await fetch(buildUrl(section, userId, apiKey, selections), {
     method: "GET",
     cache: "no-store",
+    headers: { "User-Agent": "torn-ai-dashboard/0.1" },
     signal: AbortSignal.timeout(20_000),
   });
 
-  if (!response.ok) {
-    throw new Error(`Torn API HTTP ${response.status}`);
+  let body: unknown;
+  try {
+    body = await response.json();
+  } catch {
+    throw new TornApiError(`Torn API returned invalid JSON (HTTP ${response.status})`);
   }
 
-  const body = (await response.json()) as T & { error?: unknown };
-  if (body && "error" in body && body.error) {
-    throw new Error("Torn API returned an error");
+  const record = body as Record<string, unknown>;
+  const error = record.error as { code?: number; error?: string } | undefined;
+  if (!response.ok || error) {
+    throw new TornApiError(error?.error ?? `Torn API HTTP ${response.status}`, error?.code);
   }
-
-  return body;
+  return body as T;
 }
 
-/**
- * First sync adapter. Keep raw endpoint calls isolated here; the rest of the
- * application consumes normalized state instead of Torn response shapes.
- * Expand the selection registry as API coverage is implemented.
- */
-export async function fetchCurrentProfile(
-  tornUserId: number,
-  apiKey: string,
-): Promise<TornCurrentState> {
-  const data = await tornRequest<Record<string, unknown>>(
-    `/user/${tornUserId}`,
-    apiKey,
-    ["profile", "bars", "cooldowns", "money", "networth", "battlestats"],
-  );
-
-  const profile = (data.profile ?? {}) as Record<string, unknown>;
+/** Fetch the dashboard-oriented user payload from Torn API v2. */
+export async function fetchCurrentProfile(tornUserId: number, apiKey: string): Promise<TornCurrentState> {
+  const data = await tornRequest<Record<string, unknown>>("user", tornUserId, apiKey, DASHBOARD_USER_SELECTIONS);
+  const profile = (data.profile ?? data.basic ?? {}) as Record<string, unknown>;
   const bars = (data.bars ?? {}) as Record<string, unknown>;
   const cooldowns = (data.cooldowns ?? {}) as Record<string, unknown>;
   const battleStats = (data.battlestats ?? {}) as Record<string, unknown>;
+  const networth = (data.networth ?? {}) as Record<string, unknown>;
 
   return {
     tornUserId,
     fetchedAt: new Date().toISOString(),
     level: typeof profile.level === "number" ? profile.level : undefined,
     rank: typeof profile.rank === "string" ? profile.rank : undefined,
-    networth: typeof data.networth === "number" ? data.networth : undefined,
+    networth: typeof data.networth === "number" ? data.networth : typeof networth.total === "number" ? networth.total : undefined,
     money: typeof data.money === "number" ? data.money : undefined,
     energy: typeof bars.energy === "number" ? bars.energy : undefined,
     nerve: typeof bars.nerve === "number" ? bars.nerve : undefined,
     happy: typeof bars.happy === "number" ? bars.happy : undefined,
-    cooldowns: Object.fromEntries(
-      Object.entries(cooldowns).map(([key, value]) => [key, typeof value === "number" ? value : null]),
-    ),
-    battleStats: Object.fromEntries(
-      Object.entries(battleStats).filter(([, value]) => typeof value === "number") as [string, number][],
-    ),
+    cooldowns: Object.fromEntries(Object.entries(cooldowns).map(([key, value]) => [key, typeof value === "number" ? value : null])),
+    battleStats: Object.fromEntries(Object.entries(battleStats).filter(([, value]) => typeof value === "number") as [string, number][]),
     metrics: data,
   };
 }
